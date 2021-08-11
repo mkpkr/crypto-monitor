@@ -6,6 +6,10 @@ import org.springframework.kafka.support.serializer.DeserializationException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.mike.cryptomonitor.model.PriceTick;
 
+/**
+ * @deprecated use org.springframework.kafka.support.serializer.JsonDeserializer
+ */
+@Deprecated
 public class PriceTickDeserializer implements Deserializer<PriceTick> {
     private final ObjectMapper objectMapper = new ObjectMapper();
 

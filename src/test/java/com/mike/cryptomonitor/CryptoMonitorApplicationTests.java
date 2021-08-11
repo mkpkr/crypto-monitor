@@ -25,6 +25,8 @@ import org.springframework.kafka.core.ConsumerFactory;
 import org.springframework.kafka.core.DefaultKafkaConsumerFactory;
 import org.springframework.kafka.core.DefaultKafkaProducerFactory;
 import org.springframework.kafka.core.KafkaTemplate;
+import org.springframework.kafka.support.serializer.JsonSerde;
+import org.springframework.kafka.support.serializer.JsonSerializer;
 import org.springframework.kafka.test.EmbeddedKafkaBroker;
 import org.springframework.kafka.test.context.EmbeddedKafka;
 import org.springframework.test.annotation.DirtiesContext;
@@ -55,9 +57,8 @@ public class CryptoMonitorApplicationTests {
 	public void setUp() {
 		Map<String, Object> senderProps = producerProps(embeddedKafka);
 		senderProps.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, StringSerializer.class);
-		senderProps.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, PriceTickSerializer.class);
+		senderProps.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, JsonSerializer.class);
         DefaultKafkaProducerFactory<String, PriceTick> pf = new DefaultKafkaProducerFactory<>(senderProps);
-        
         
 //		Map<String, Object> consumerProps = consumerProps("group", "false", embeddedKafka);
 //        consumerProps.put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "earliest");
