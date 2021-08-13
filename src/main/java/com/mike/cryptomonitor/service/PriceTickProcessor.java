@@ -9,19 +9,14 @@ import java.util.function.Consumer;
 import org.apache.kafka.common.serialization.Serdes.StringSerde;
 import org.apache.kafka.common.utils.Bytes;
 import org.apache.kafka.streams.kstream.KStream;
-import org.apache.kafka.streams.kstream.KTable;
 import org.apache.kafka.streams.kstream.Materialized;
 import org.apache.kafka.streams.kstream.TimeWindows;
-import org.apache.kafka.streams.kstream.Windowed;
-import org.apache.kafka.streams.state.KeyValueStore;
 import org.apache.kafka.streams.state.WindowStore;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.kafka.support.serializer.JsonSerde;
 import org.springframework.stereotype.Service;
 
 import com.mike.cryptomonitor.model.PriceTick;
-
-import lombok.Data;
 
 @Service("processor")
 public class PriceTickProcessor implements Consumer<KStream<String, PriceTick>> {
@@ -46,14 +41,12 @@ public class PriceTickProcessor implements Consumer<KStream<String, PriceTick>> 
 		     .advanceBy(Duration.ofSeconds(windowAdvanceSeconds)))
 		     .<PriceDiff>aggregate(PriceDiff::new,  
 		    		   (key, newValue, aggregate) -> {
-		    			   BigDecimal newDifference = newValue.getPrice().subtract(aggregate.getPreviousValue());
+
 		    			   System.out.println("[setting");
-//		    			   aggregate.setDifference(aggregate.getDifference().add(newDifference));
-		    			   aggregate.setPreviousValue(newValue.getPrice());
-		    			   aggregate.addTimestamp(newValue.getTimestampMs());
-		    			   aggregate.addPrice(newValue.getPrice());
+		    			   aggregate.update(newValue);
+	
 		    			   System.out.println("returning new]");
-		    			   System.out.println("--key: " + key + " --newValue-price: " + newValue.getPrice() +  " --newValue-timestamp: " + newValue.getTimestampMs() + " --newValue-id: " + newValue.getId() +   "--newDifference: " + newDifference + "--aggregate: " + aggregate);
+		    			   System.out.println("--key: " + key + " --newValue-price: " + newValue.getPrice() +  " --newValue-timestamp: " + newValue.getTimestampMs() + " --newValue-id: " + newValue.getId() +  "--aggregate: " + aggregate);
 		    		       return new PriceDiff(aggregate);
 		               },
 		    		   Materialized.<String, PriceDiff, WindowStore<Bytes, byte[]>>as("price-differences3")
@@ -68,23 +61,29 @@ public class PriceTickProcessor implements Consumer<KStream<String, PriceTick>> 
 		
 	}
 	
-//	@Data
-	private static class PriceDiff {
-		static int count = 0;
+	//@Data
+	static class PriceDiff {
 		
-		private int id;
-		private BigDecimal firstValue;
+		static BigDecimal latest;
+
+//		private BigDecimal firstValue;
 		private BigDecimal previousValue;
 		private BigDecimal difference;
 		
+		
+		//TODO remove these debug variables
+		static int count = 0;
+		private int id;
 		private List<Long> timestamps;
 		private List<BigDecimal> prices;
 		
 		public PriceDiff() {
 			id = ++count;
-			System.out.println("~~~new price diff " + count);
+			System.out.println("~~~new price diff " + id);
+			previousValue = latest; //may be null, set in update() if it is
 			timestamps = new ArrayList<>();
 			prices = new ArrayList<>();
+			difference = BigDecimal.ZERO;
 		}
 		
 		public PriceDiff(PriceDiff original) {
@@ -98,16 +97,26 @@ public class PriceTickProcessor implements Consumer<KStream<String, PriceTick>> 
 		    this.prices = new ArrayList<>(original.prices);
 		}
 		
-		public void updateValue(BigDecimal value) {
-			if(previousValue != null) {
-				if(difference == null) {
-					
-				} else { 
-					
-				}
+		/*
+		 * TODO: concern - values will be wrong until a complete cycle of windows has passed e.g. until window size has elapsed
+		 * this is because when the first value is encountered, it will backfill previous windows and these won't have correct 
+		 * live prices to gauge a difference from
+		 * for future we could use the constructor to call out to a service that got the price at the start time of the window
+		 * 		not sure how to do that as you'd need to be aware of the window you're in when you create it
+		 */
+		public void update(PriceTick priceTick) {
+			if(previousValue == null) { //only called on startup for first window when latest was null
+				previousValue = priceTick.getPrice();
+			} else {
+				BigDecimal newDifference = priceTick.getPrice().subtract(previousValue);
+				difference = difference.add(newDifference);
 			}
-			
-			previousValue = value;
+
+			previousValue = priceTick.getPrice();
+			latest = priceTick.getPrice();
+
+			addTimestamp(priceTick.getTimestampMs());
+			addPrice(priceTick.getPrice());
 		}
 
 		/*
@@ -144,7 +153,7 @@ public class PriceTickProcessor implements Consumer<KStream<String, PriceTick>> 
 		}
 
 		public void setDifference(BigDecimal difference) {
-			System.out.println("~~~setting difference for " + id + " to " + difference + " (first value is " + firstValue);
+			System.out.println("~~~setting difference for " + id + " to " + difference);
 			this.difference = difference;
 		}
 		
@@ -163,23 +172,25 @@ public class PriceTickProcessor implements Consumer<KStream<String, PriceTick>> 
 		public List<BigDecimal> getPrices() {
 			return prices;
 		}
-		
-		
-
-		public BigDecimal getFirstValue() {
-			return firstValue;
-		}
-
-		public void setFirstValue(BigDecimal firstValue) {
-			System.out.println("~~~setting first value for " + id + " to " + firstValue);
-			this.firstValue = firstValue;
-		}
 
 		@Override
 		public String toString() {
-			return "PriceDiff [firstValue=" + firstValue + ", previousValue=" + previousValue + ", difference="
-					+ difference + ", id=" + id + ", timestamps=" + timestamps + ", prices=" + prices + "]";
+			return "PriceDiff [previousValue=" + previousValue + ", difference=" + difference + ", id=" + id
+					+ ", timestamps=" + timestamps + ", prices=" + prices + "]";
 		}
+		
+		
+//
+//		public BigDecimal getFirstValue() {
+//			return firstValue;
+//		}
+//
+//		public void setFirstValue(BigDecimal firstValue) {
+//			System.out.println("~~~setting first value for " + id + " to " + firstValue);
+//			this.firstValue = firstValue;
+//		}
+
+		
 
 		
 
@@ -188,5 +199,7 @@ public class PriceTickProcessor implements Consumer<KStream<String, PriceTick>> 
 		
 		
 	}
+	
+
 
 }
