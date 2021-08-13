@@ -13,6 +13,8 @@ import lombok.Value;
 public class PriceTick {
 	
 	private String id;
+	private long timestampMs;
 	private CurrencyPair ccy;
 	private BigDecimal price;
+	
 }
