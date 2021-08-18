@@ -23,7 +23,7 @@ public class PriceDifferenceProcessorTests {
 	}
 	
 	@Test
-	public void priceDifferencesAreStored() {
+	public void price_differences_are_stored() {
 		Windowed<String> windowedKey1 = new Windowed<>("btc_usd", new TimeWindow(1L, 2L));
 		Windowed<String> windowedKey2 = new Windowed<>("xrp_gbp", new TimeWindow(2L, 3L));
 		
@@ -38,7 +38,7 @@ public class PriceDifferenceProcessorTests {
 	}
 	
 	@Test
-	public void windowedKeysAreInCorrectOrder() {
+	public void windowed_keys_are_in_correct_order() {
 		
 		BigDecimal price = BigDecimal.ONE; //not important for the test - we are focused on key order
 

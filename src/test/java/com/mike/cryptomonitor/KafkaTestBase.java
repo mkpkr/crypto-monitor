@@ -56,6 +56,8 @@ public class KafkaTestBase<T> {
 		public KafkaAdmin admin() {
 		    Map<String, Object> configs = new HashMap<>();
 		    configs.put(AdminClientConfig.BOOTSTRAP_SERVERS_CONFIG, kafka.getBootstrapServers());
+		    configs.put(AdminClientConfig.SOCKET_CONNECTION_SETUP_TIMEOUT_MS_CONFIG, "60000");
+		    
 		    return new KafkaAdmin(configs);
 		}
 
@@ -72,7 +74,6 @@ public class KafkaTestBase<T> {
 			configProps.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, kafka.getBootstrapServers());
 			configProps.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, StringSerializer.class);
 			configProps.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, JsonSerializer.class);
-			configProps.put(ProducerConfig.ACKS_CONFIG, "0");
 			
 			return new DefaultKafkaProducerFactory<>(configProps);
 		}

@@ -2,6 +2,7 @@ package com.mike.cryptomonitor.service;
 
 import java.math.BigDecimal;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.function.Consumer;
@@ -18,16 +19,56 @@ import org.springframework.stereotype.Service;
 
 import com.mike.cryptomonitor.model.PriceTick;
 
+import lombok.extern.slf4j.Slf4j;
+
+/**
+ * Processes price ticks from a kafka topic where key is currency and value is {@link com.mike.cryptomonitor.model.PriceTick}
+ * 
+ * Aggregates prices by time windows:
+ * 
+ * window size (seconds): cryptomonitor.streaming.window.size.seconds
+ * window advance (seconds): advanced by cryptomonitor.streaming.window.advance.seconds
+ * 
+ * For example, if window size == 10 and advance == 1 then prices would be aggregated like...
+ * 
+ * [10:00:00, 10:00:10)
+ * [10:00:01, 10:00:11)
+ * [10:00:02, 10:00:12)
+ * [10:00:03, 10:00:13)
+ * [10:00:04, 10:00:14)
+ * ...
+ * 
+ * NOTE: price differences will be wrong until a complete window cycle has passed (i.e. until the window size has elapsed once). 
+ * This is because when a timestamp is first processed, previous windows will be created and backfilled, e.g. if window size is 10 and advance is 1, when the timestamp 10:00:10 is processed, 10 windows will be created that this price tick would be part of from [10:00:01, 10:00:11) - [10:00:10, 10:00:20).
+ * When the application first starts and those previous windows are created, the "current price" isn't available for them, so the difference will not be correct. Once the time window has elapsed, in this case 10 seconds have passed, then newly created windows will have the current price available, and the price difference during those windows can be correctly calculated.
+ * 
+ * This could be fixed by calling out to a service that has historical prices when a time window is created, to get the starting price for that window, but for now we will settle for "eventual accuracy".
+ * 
+ *		
+		 * TODO: concern - values will be wrong until a complete cycle of windows has passed e.g. until window size has elapsed
+		 * this is because when the first value is encountered, it will backfill previous windows and these won't have correct 
+		 * live prices to gauge a difference from
+		 * for future we could use the constructor to call out to a service that got the price at the start time of the window
+		 * 		not sure how to do that as you'd need to be aware of the window you're in when you create it
+		 *
+ */
 @Service("processor")
+@Slf4j
 public class PriceTickProcessor implements Consumer<KStream<String, PriceTick>> {
 
-	private int windowSizeSeconds;
-	private int windowAdvanceSeconds;
+	private PriceDifferenceProcessor priceDifferenceProcessor;
+	private final int windowSizeSeconds;
+	private final int windowAdvanceSeconds;
+	private final String stateStoreName;
 	
-	public PriceTickProcessor(@Value("${cryptomonitor.streaming.window.size.seconds}") int windowSizeSeconds, 
-			                  @Value("${cryptomonitor.streaming.window.advance.seconds}") int windowAdvanceSeconds) {
+	public PriceTickProcessor(PriceDifferenceProcessor priceDifferenceProcessor,
+			                  @Value("${cryptomonitor.streaming.window.size.seconds}") int windowSizeSeconds, 
+			                  @Value("${cryptomonitor.streaming.window.advance.seconds}") int windowAdvanceSeconds,
+			                  @Value("${cryptomonitor.kafka.state-store.name}") String stateStoreName) {
+		this.priceDifferenceProcessor = priceDifferenceProcessor;
 		this.windowSizeSeconds = windowSizeSeconds;
 		this.windowAdvanceSeconds = windowAdvanceSeconds;
+		this.stateStoreName = stateStoreName;
 	}
 
 	@Override
@@ -35,86 +76,76 @@ public class PriceTickProcessor implements Consumer<KStream<String, PriceTick>> 
 		
 		//TODO idempotent processing
 
-		input.peek((k,v) -> System.out.println("# Input: Key: " + k + "; Value " + v))
-		     .groupByKey() //key is already currency pair so no need to repartition
+		input.groupByKey() //key is already currency pair so no need to repartition
 		     .windowedBy(TimeWindows.of(Duration.ofSeconds(windowSizeSeconds))
-		     .advanceBy(Duration.ofSeconds(windowAdvanceSeconds)))
+			     .advanceBy(Duration.ofSeconds(windowAdvanceSeconds)))
 		     .<PriceDiff>aggregate(PriceDiff::new,  
 		    		   (key, newValue, aggregate) -> {
-
-		    			   System.out.println("[setting");
 		    			   aggregate.update(newValue);
-	
-		    			   System.out.println("returning new]");
-		    			   System.out.println("--key: " + key + " --newValue-price: " + newValue.getPrice() +  " --newValue-timestamp: " + newValue.getTimestampMs() + " --newValue-id: " + newValue.getId() +  "--aggregate: " + aggregate);
-		    		       return new PriceDiff(aggregate);
+		    			   return new PriceDiff(aggregate);
 		               },
-		    		   Materialized.<String, PriceDiff, WindowStore<Bytes, byte[]>>as("price-differences3")
+		    		   Materialized.<String, PriceDiff, WindowStore<Bytes, byte[]>>as(stateStoreName + Instant.now().toEpochMilli())
 			                       .withKeySerde(new StringSerde())
 		    		   			   .withValueSerde(new JsonSerde<>(PriceDiff.class)))
 		     .mapValues(priceDiff -> priceDiff.getDifference())
 		     .toStream()
-		     .peek((k,v) -> System.out.println("# peek: Key: " + k + "; Value " + v))
-		     .foreach((k,v) -> System.out.println("### Output: Key: " + k + "; Value " + v));
-		     
-		System.out.println("##### DONE");
+		     .foreach((k,v) -> priceDifferenceProcessor.process(k,v));
 		
 	}
-	
-	//@Data
+
 	static class PriceDiff {
 		
 		static BigDecimal latest;
 
-//		private BigDecimal firstValue;
+		private String id;
 		private BigDecimal previousValue;
 		private BigDecimal difference;
 		
-		
 		//TODO remove these debug variables
 		static int count = 0;
-		private int id;
+		private BigDecimal previousValueSetInCtor;
+		
 		private List<Long> timestamps;
 		private List<BigDecimal> prices;
 		
 		public PriceDiff() {
-			id = ++count;
-			System.out.println("~~~new price diff " + id);
+			id = "" + ++count;
+			
 			previousValue = latest; //may be null, set in update() if it is
+			previousValueSetInCtor = latest;
 			timestamps = new ArrayList<>();
 			prices = new ArrayList<>();
 			difference = BigDecimal.ZERO;
 		}
 		
 		public PriceDiff(PriceDiff original) {
-			System.out.println("~~~copy ctor " + original.id);
 			this.id = original.id;
-//			this.firstValue = original.firstValue;
 			this.previousValue = original.previousValue;
+			this.previousValueSetInCtor = original.previousValueSetInCtor;
 			this.difference = original.difference;
-			
 			this.timestamps = new ArrayList<>(original.timestamps);
 		    this.prices = new ArrayList<>(original.prices);
 		}
 		
-		/*
-		 * TODO: concern - values will be wrong until a complete cycle of windows has passed e.g. until window size has elapsed
-		 * this is because when the first value is encountered, it will backfill previous windows and these won't have correct 
-		 * live prices to gauge a difference from
-		 * for future we could use the constructor to call out to a service that got the price at the start time of the window
-		 * 		not sure how to do that as you'd need to be aware of the window you're in when you create it
-		 */
+
 		public void update(PriceTick priceTick) {
+			
 			if(previousValue == null) { //only called on startup for first window when latest was null
 				previousValue = priceTick.getPrice();
 			} else {
 				BigDecimal newDifference = priceTick.getPrice().subtract(previousValue);
 				difference = difference.add(newDifference);
 			}
+			
+			if(id != priceTick.getId()) {
+				id = priceTick.getId();
+				latest = previousValue;
+			}
 
 			previousValue = priceTick.getPrice();
-			latest = priceTick.getPrice();
-
+			
+			
+			
 			addTimestamp(priceTick.getTimestampMs());
 			addPrice(priceTick.getPrice());
 		}
@@ -123,37 +154,26 @@ public class PriceTickProcessor implements Consumer<KStream<String, PriceTick>> 
 		 * JSON Getters and Setters
 		 */
 		public BigDecimal getPreviousValue() {
-			System.out.println("~~~previous value for " + id + " is " + previousValue);
 			return previousValue;
 		}
 
 		public void setPreviousValue(BigDecimal previousValue) {
-			System.out.println("~~~setting previous value for " + id + " to " + previousValue);
-//			if(firstValue == null) {
-//				System.out.println("~~~setting first value for " + id + " to " + previousValue);
-//				this.firstValue = previousValue;
-//			}
 			this.previousValue = previousValue;
 		}
 		
-		public int getId() {
+		public String getId() {
 			return id;
 		}
 
-		public void setId(int id) {
-			System.out.println("~~~setting id for " + this.id + " to " + id);
+		public void setId(String id) {
 			this.id = id;
 		}
 
 		public BigDecimal getDifference() {
-			System.out.println("~~~difference for " + id + " is " + difference);
 			return difference;
-//			System.out.println("~~~difference for " + id + " is " + difference + " but firstValue is " + firstValue);
-//			return firstValue == null ? BigDecimal.ZERO : difference.subtract(firstValue);
 		}
 
 		public void setDifference(BigDecimal difference) {
-			System.out.println("~~~setting difference for " + id + " to " + difference);
 			this.difference = difference;
 		}
 		
@@ -173,29 +193,22 @@ public class PriceTickProcessor implements Consumer<KStream<String, PriceTick>> 
 			return prices;
 		}
 
+		public BigDecimal getPreviousValueSetInCtor() {
+			return previousValueSetInCtor;
+		}
+
+		public void setPreviousValueSetInCtor(BigDecimal previousValueSetInCtor) {
+			this.previousValueSetInCtor = previousValueSetInCtor;
+		}
+
 		@Override
 		public String toString() {
-			return "PriceDiff [previousValue=" + previousValue + ", difference=" + difference + ", id=" + id
-					+ ", timestamps=" + timestamps + ", prices=" + prices + "]";
+			return "PriceDiff [previousValue=" + previousValue + ", difference=" + difference
+					+ ", previousValueSetInCtor=" + previousValueSetInCtor + ", id=" + id + ", timestamps=" + timestamps
+					+ ", prices=" + prices + "]";
 		}
-		
-		
-//
-//		public BigDecimal getFirstValue() {
-//			return firstValue;
-//		}
-//
-//		public void setFirstValue(BigDecimal firstValue) {
-//			System.out.println("~~~setting first value for " + id + " to " + firstValue);
-//			this.firstValue = firstValue;
-//		}
 
-		
 
-		
-
-		
-		
 		
 		
 	}
