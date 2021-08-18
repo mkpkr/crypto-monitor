@@ -19,6 +19,7 @@ import org.springframework.stereotype.Service;
 
 import com.mike.cryptomonitor.model.PriceTick;
 
+import lombok.Data;
 import lombok.extern.slf4j.Slf4j;
 
 /**
@@ -52,16 +53,15 @@ import lombok.extern.slf4j.Slf4j;
 		 * 		not sure how to do that as you'd need to be aware of the window you're in when you create it
 		 *
  */
-@Service("processor")
-@Slf4j
-public class PriceTickProcessor implements Consumer<KStream<String, PriceTick>> {
+@Service("aggregator")
+public class PriceTickAggregator implements Consumer<KStream<String, PriceTick>> {
 
 	private PriceDifferenceProcessor priceDifferenceProcessor;
 	private final int windowSizeSeconds;
 	private final int windowAdvanceSeconds;
 	private final String stateStoreName;
 	
-	public PriceTickProcessor(PriceDifferenceProcessor priceDifferenceProcessor,
+	public PriceTickAggregator(PriceDifferenceProcessor priceDifferenceProcessor,
 			                  @Value("${cryptomonitor.streaming.window.size.seconds}") int windowSizeSeconds, 
 			                  @Value("${cryptomonitor.streaming.window.advance.seconds}") int windowAdvanceSeconds,
 			                  @Value("${cryptomonitor.kafka.state-store.name}") String stateStoreName) {
@@ -93,41 +93,26 @@ public class PriceTickProcessor implements Consumer<KStream<String, PriceTick>> 
 		
 	}
 
+	@Data
 	static class PriceDiff {
 		
-		static BigDecimal latest;
+		private static BigDecimal latest;
 
 		private String id;
 		private BigDecimal previousValue;
 		private BigDecimal difference;
 		
-		//TODO remove these debug variables
-		static int count = 0;
-		private BigDecimal previousValueSetInCtor;
-		
-		private List<Long> timestamps;
-		private List<BigDecimal> prices;
-		
 		public PriceDiff() {
-			id = "" + ++count;
-			
 			previousValue = latest; //may be null, set in update() if it is
-			previousValueSetInCtor = latest;
-			timestamps = new ArrayList<>();
-			prices = new ArrayList<>();
 			difference = BigDecimal.ZERO;
 		}
 		
 		public PriceDiff(PriceDiff original) {
 			this.id = original.id;
 			this.previousValue = original.previousValue;
-			this.previousValueSetInCtor = original.previousValueSetInCtor;
 			this.difference = original.difference;
-			this.timestamps = new ArrayList<>(original.timestamps);
-		    this.prices = new ArrayList<>(original.prices);
 		}
 		
-
 		public void update(PriceTick priceTick) {
 			
 			if(previousValue == null) { //only called on startup for first window when latest was null
@@ -143,73 +128,7 @@ public class PriceTickProcessor implements Consumer<KStream<String, PriceTick>> 
 			}
 
 			previousValue = priceTick.getPrice();
-			
-			
-			
-			addTimestamp(priceTick.getTimestampMs());
-			addPrice(priceTick.getPrice());
-		}
-
-		/*
-		 * JSON Getters and Setters
-		 */
-		public BigDecimal getPreviousValue() {
-			return previousValue;
-		}
-
-		public void setPreviousValue(BigDecimal previousValue) {
-			this.previousValue = previousValue;
-		}
-		
-		public String getId() {
-			return id;
-		}
-
-		public void setId(String id) {
-			this.id = id;
-		}
-
-		public BigDecimal getDifference() {
-			return difference;
-		}
-
-		public void setDifference(BigDecimal difference) {
-			this.difference = difference;
-		}
-		
-		public void addTimestamp(long timestamp) {
-			this.timestamps.add(timestamp);
-		}
-		
-		public void addPrice(BigDecimal price) {
-			this.prices.add(price);
-		}
-
-		public List<Long> getTimestamps() {
-			return timestamps;
-		}
-
-		public List<BigDecimal> getPrices() {
-			return prices;
-		}
-
-		public BigDecimal getPreviousValueSetInCtor() {
-			return previousValueSetInCtor;
-		}
-
-		public void setPreviousValueSetInCtor(BigDecimal previousValueSetInCtor) {
-			this.previousValueSetInCtor = previousValueSetInCtor;
-		}
-
-		@Override
-		public String toString() {
-			return "PriceDiff [previousValue=" + previousValue + ", difference=" + difference
-					+ ", previousValueSetInCtor=" + previousValueSetInCtor + ", id=" + id + ", timestamps=" + timestamps
-					+ ", prices=" + prices + "]";
-		}
-
-
-		
+		}		
 		
 	}
 	

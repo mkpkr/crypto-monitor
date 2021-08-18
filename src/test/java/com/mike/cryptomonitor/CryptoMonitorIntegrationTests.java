@@ -6,6 +6,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.Map.Entry;
+import java.util.Set;
 import java.util.SortedMap;
 
 import org.apache.kafka.streams.kstream.Windowed;
@@ -22,7 +23,7 @@ import lombok.extern.slf4j.Slf4j;
 
 @SpringBootTest(properties = "spring.autoconfigure.exclude=org.springframework.cloud.stream.test.binder.TestSupportBinderAutoConfiguration",
                 classes = KafkaTestBase.KafkaConfiguration.class)
-public class CryptoMonitorApplicationTests extends KafkaTestBase<PriceTick> {
+public class CryptoMonitorIntegrationTests extends KafkaTestBase<PriceTick> {
 
 	@Value("${cryptomonitor.input.topic}")
 	String topic;
@@ -54,23 +55,23 @@ public class CryptoMonitorApplicationTests extends KafkaTestBase<PriceTick> {
     		kafkaTemplate.send(topic, currency, new PriceTick("id"+i, eventTime, CurrencyPair.BTC_USD, price)).get();
    
     	}
-    	
-    	SortedMap<Windowed<String>, BigDecimal> priceDifferences = priceDifferenceProcessor.getPriceDifferences();
 
     	long finalEventTime = eventTime;
-    	await().until(() -> priceDifferences.lastKey().window().start() == finalEventTime);
+    	await().until(() -> priceDifferenceProcessor.getPriceDifferences().lastKey().window().start() == finalEventTime);
 
     	/* assert */
     	int boundary = windowSizeSeconds/windowAdvanceSeconds;
     	int idx = 0;
+    	
+    	Set<Entry<Windowed<String>, BigDecimal>> priceDifferences = priceDifferenceProcessor.getPriceDifferences().entrySet();
 
-    	for(Entry<Windowed<String>, BigDecimal> entry : priceDifferences.entrySet()) {
+    	for(Entry<Windowed<String>, BigDecimal> entry : priceDifferences) {
     		//ignore the first iteration of windows - see doc on PriceTickProcessor for why
     		if(idx++ < boundary) {
     			continue;
     		}
     		//ignore the final iteration of windows as they will not represent real life scenario (each of the final windows will have fewer price ticks than the last as the process winds down)
-    		if(idx >= priceDifferences.entrySet().size() - boundary) {
+    		if(idx >= priceDifferences.size() - boundary) {
     			break;
     		}
     		
